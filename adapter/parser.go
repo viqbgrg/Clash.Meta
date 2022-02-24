@@ -81,6 +81,14 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewTrojan(*trojanOption)
+	case "tiny":
+		tinyOption := &outbound.TinyOption{}
+		err = decoder.Decode(mapping, tinyOption)
+		if err != nil {
+			break
+		}
+		proxy = outbound.NewTiny(*tinyOption)
+
 	default:
 		return nil, fmt.Errorf("unsupport proxy type: %s", proxyType)
 	}
