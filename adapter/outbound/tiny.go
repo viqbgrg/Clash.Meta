@@ -30,8 +30,13 @@ type TinyOption struct {
 
 // StreamConn implements C.ProxyAdapter
 func (h *Tiny) StreamConn(c net.Conn, metadata *C.Metadata) (net.Conn, error) {
+	hostIp := metadata.RemoteAddress()
+	if metadata.DstIP != nil && metadata.DstPort != "" {
+		hostIp = metadata.DstIP.String() + ":" + metadata.DstPort
+	}
+
 	cfg := &tiny.HTTPConfig{
-		RemoteAddress: metadata.RemoteAddress(),
+		RemoteAddress: hostIp,
 		Protocol:      h.protocol,
 		Del:           h.del,
 		First:         h.first,
