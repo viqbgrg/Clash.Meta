@@ -64,7 +64,7 @@ func NewTiny(option TinyOption) *Tiny {
 		Base: &Base{
 			name:  option.Name,
 			addr:  net.JoinHostPort(option.Server, strconv.Itoa(option.Port)),
-			tp:    C.Http,
+			tp:    C.Tiny,
 			iface: option.Interface,
 		},
 		protocol: option.Protocol,
