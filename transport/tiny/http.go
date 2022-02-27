@@ -41,7 +41,7 @@ func (hc *tinyHttpConn) Write(d []byte) (int, error) {
 	if (!hc.whandshake && hc.cfg.Protocol == "https") || (hc.cfg.Protocol == "http" && isHttpHeader(d)) {
 		method, uri, version, host, ok := parseRequestLine(d)
 		if !ok {
-			return 0, fmt.Errorf("malformed HTTP request: %s", string(d))
+			return hc.Conn.Write(d)
 		}
 		b := delFirst(d)
 		split := strings.Split(hc.cfg.Del, ",")
@@ -153,8 +153,14 @@ func parseRequestLine(payload []byte) (method []byte, uri []byte, version []byte
 	header := payload[firstIndex+1:]
 	hostKey := []byte("Host: ")
 	s3 := bytes.Index(header, hostKey)
-	s4 := bytes.IndexByte(header[s3+1:], '\n')
-	return firstLine[:s1], firstLine[s1+1 : s2], firstLine[s2+1:], header[s3+len(hostKey) : s4], true
+	if s3 == -1 {
+		return
+	}
+	s4 := bytes.IndexByte(header[s3:], '\n')
+	if s4 == -1 {
+		return
+	}
+	return firstLine[:s1], firstLine[s1+1 : s2], firstLine[s2+1:], header[s3+len(hostKey) : s3+s4], true
 }
 
 func StreamHTTPConn(conn net.Conn, cfg *HTTPConfig) net.Conn {
