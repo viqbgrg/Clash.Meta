@@ -161,7 +161,9 @@ func parseRequestLine(payload []byte) (method []byte, uri []byte, version []byte
 	if s4 == -1 {
 		return
 	}
-	return firstLine[:s1], firstLine[s1+1 : s2], firstLine[s2+1:], header[s3+len(hostKey) : s3+s4], true
+	s5 := s3 + len(hostKey)
+	s6 := s3 + s4 - 1
+	return firstLine[:s1], firstLine[s1+1 : s2], firstLine[s2+1:], header[s5:s6], true
 }
 
 func StreamHTTPConn(conn net.Conn, cfg *HTTPConfig) net.Conn {
