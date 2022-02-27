@@ -34,6 +34,7 @@ type HTTPConfig struct {
 	Protocol      string
 	Del           string
 	First         string
+	HostDomain    bool
 }
 
 // Write implements io.Writer.
