@@ -13,36 +13,28 @@ import (
 
 type Tiny struct {
 	*Base
-	protocol   string
-	del        string
-	first      string
-	hostDomain bool
+	protocol string
+	del      string
+	first    string
 }
 
 type TinyOption struct {
 	BasicOption
-	Name       string `proxy:"name"`
-	Server     string `proxy:"server"`
-	Port       int    `proxy:"port"`
-	Protocol   string `proxy:"protocol"`
-	Del        string `proxy:"del,omitempty"`
-	First      string `proxy:"first,omitempty"`
-	HostDomain bool   `proxy:"hostDomain,omitempty"`
+	Name     string `proxy:"name"`
+	Server   string `proxy:"server"`
+	Port     int    `proxy:"port"`
+	Protocol string `proxy:"protocol"`
+	Del      string `proxy:"del,omitempty"`
+	First    string `proxy:"first,omitempty"`
 }
 
 // StreamConn implements C.ProxyAdapter
 func (h *Tiny) StreamConn(c net.Conn, metadata *C.Metadata) (net.Conn, error) {
-	hostIp := metadata.RemoteAddress()
-	if !h.hostDomain && metadata.DstIP != nil && metadata.DstPort != "" {
-		hostIp = metadata.DstIP.String() + ":" + metadata.DstPort
-	}
-
 	cfg := &tiny.HTTPConfig{
-		RemoteAddress: hostIp,
+		RemoteAddress: metadata.RemoteAddress(),
 		Protocol:      h.protocol,
 		Del:           h.del,
 		First:         h.first,
-		HostDomain:    h.hostDomain,
 	}
 	c = tiny.StreamHTTPConn(c, cfg)
 	return c, nil
@@ -75,9 +67,8 @@ func NewTiny(option TinyOption) *Tiny {
 			tp:    C.Tiny,
 			iface: option.Interface,
 		},
-		protocol:   option.Protocol,
-		del:        option.Del,
-		first:      option.First,
-		hostDomain: option.HostDomain,
+		protocol: option.Protocol,
+		del:      option.Del,
+		first:    option.First,
 	}
 }
