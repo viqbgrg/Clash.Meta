@@ -3,21 +3,19 @@ package outboundgroup
 import (
 	"context"
 	"encoding/json"
-	"github.com/Dreamacro/clash/log"
-	"go.uber.org/atomic"
-	"time"
-
+	"errors"
 	"github.com/Dreamacro/clash/adapter/outbound"
 	"github.com/Dreamacro/clash/component/dialer"
 	C "github.com/Dreamacro/clash/constant"
 	"github.com/Dreamacro/clash/constant/provider"
+	"time"
 )
 
 type Fallback struct {
 	*GroupBase
-	disableUDP  bool
-	failedTimes *atomic.Int32
-	failedTime  *atomic.Int64
+	disableUDP bool
+	testUrl    string
+	selected   string
 }
 
 func (f *Fallback) Now() string {
@@ -31,8 +29,7 @@ func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata, opts .
 	c, err := proxy.DialContext(ctx, metadata, f.Base.DialOptions(opts...)...)
 	if err == nil {
 		c.AppendToChains(f)
-		f.failedTimes.Store(-1)
-		f.failedTime.Store(-1)
+		f.onDialSuccess()
 	} else {
 		f.onDialFailed()
 	}
@@ -46,39 +43,9 @@ func (f *Fallback) ListenPacketContext(ctx context.Context, metadata *C.Metadata
 	pc, err := proxy.ListenPacketContext(ctx, metadata, f.Base.DialOptions(opts...)...)
 	if err == nil {
 		pc.AppendToChains(f)
-		f.failedTimes.Store(-1)
-		f.failedTime.Store(-1)
-	} else {
-		f.onDialFailed()
 	}
 
 	return pc, err
-}
-
-func (f *Fallback) onDialFailed() {
-	if f.failedTime.Load() == -1 {
-		log.Warnln("%s first failed", f.Name())
-		now := time.Now().UnixMilli()
-		f.failedTime.Store(now)
-		f.failedTimes.Store(1)
-	} else {
-		if f.failedTime.Load()-time.Now().UnixMilli() > 5*time.Second.Milliseconds() {
-			f.failedTimes.Store(-1)
-			f.failedTime.Store(-1)
-		} else {
-			failedCount := f.failedTimes.Inc()
-			log.Warnln("%s failed count: %d", f.Name(), failedCount)
-			if failedCount >= 5 {
-				log.Warnln("because %s failed multiple times, active health check", f.Name())
-				for _, proxyProvider := range f.providers {
-					go proxyProvider.HealthCheck()
-				}
-
-				f.failedTimes.Store(-1)
-				f.failedTime.Store(-1)
-			}
-		}
-	}
 }
 
 // SupportUDP implements C.ProxyAdapter
@@ -112,13 +79,40 @@ func (f *Fallback) Unwrap(metadata *C.Metadata) C.Proxy {
 
 func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
 	proxies := f.GetProxies(touch)
-	for _, proxy := range proxies {
-		if proxy.Alive() {
+	al := proxies[0]
+	for i := len(proxies) - 1; i > -1; i-- {
+		proxy := proxies[i]
+		if proxy.Name() == f.selected && proxy.Alive() {
 			return proxy
+		}
+		if proxy.Alive() {
+			al = proxy
+		}
+	}
+	return al
+}
+
+func (f *Fallback) Set(name string) error {
+	var p C.Proxy
+	for _, proxy := range f.GetProxies(false) {
+		if proxy.Name() == name {
+			p = proxy
+			break
 		}
 	}
 
-	return proxies[0]
+	if p == nil {
+		return errors.New("proxy not exist")
+	}
+
+	f.selected = name
+	if !p.Alive() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
+		defer cancel()
+		_, _ = p.URLTest(ctx, f.testUrl)
+	}
+
+	return nil
 }
 
 func NewFallback(option *GroupCommonOption, providers []provider.ProxyProvider) *Fallback {
@@ -133,8 +127,7 @@ func NewFallback(option *GroupCommonOption, providers []provider.ProxyProvider) 
 			option.Filter,
 			providers,
 		}),
-		disableUDP:  option.DisableUDP,
-		failedTimes: atomic.NewInt32(-1),
-		failedTime:  atomic.NewInt64(-1),
+		disableUDP: option.DisableUDP,
+		testUrl:    option.URL,
 	}
 }

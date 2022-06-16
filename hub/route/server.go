@@ -68,11 +68,11 @@ func Start(addr string, secret string) {
 		r.Get("/version", version)
 		r.Mount("/configs", configRouter())
 		r.Mount("/proxies", proxyRouter())
+		r.Mount("/group", GroupRouter())
 		r.Mount("/rules", ruleRouter())
 		r.Mount("/connections", connectionRouter())
 		r.Mount("/providers/proxies", proxyProviderRouter())
 		r.Mount("/providers/rules", ruleProviderRouter())
-		r.Mount("/script", scriptRouter())
 		r.Mount("/cache", cacheRouter())
 	})
 

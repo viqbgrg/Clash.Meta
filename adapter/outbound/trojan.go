@@ -13,8 +13,6 @@ import (
 	"github.com/Dreamacro/clash/transport/gun"
 	"github.com/Dreamacro/clash/transport/trojan"
 	"github.com/Dreamacro/clash/transport/vless"
-
-	"golang.org/x/net/http2"
 )
 
 type Trojan struct {
@@ -25,7 +23,7 @@ type Trojan struct {
 	// for gun mux
 	gunTLSConfig *tls.Config
 	gunConfig    *gun.Config
-	transport    *http2.Transport
+	transport    *gun.TransportWrap
 }
 
 type TrojanOption struct {
@@ -161,7 +159,13 @@ func (t *Trojan) ListenPacketContext(ctx context.Context, metadata *C.Metadata, 
 		}
 	}
 
-	return t.ListenPacketOnStreamConn(c, metadata)
+	err = t.instance.WriteHeader(c, trojan.CommandUDP, serializesSocksAddr(metadata))
+	if err != nil {
+		return nil, err
+	}
+
+	pc := t.instance.PacketConn(c)
+	return newPacketConn(pc, t), err
 }
 
 // ListenPacketOnStreamConn implements C.ProxyAdapter

@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
+	"github.com/Dreamacro/clash/constant/sniffer"
 	"github.com/Dreamacro/clash/listener/tun/ipstack/commons"
 	"net"
 	"net/netip"
@@ -15,8 +16,8 @@ import (
 	"time"
 
 	"github.com/Dreamacro/clash/common/utils"
-	R "github.com/Dreamacro/clash/rule"
-	RP "github.com/Dreamacro/clash/rule/provider"
+	R "github.com/Dreamacro/clash/rules"
+	RP "github.com/Dreamacro/clash/rules/provider"
 
 	"github.com/Dreamacro/clash/adapter"
 	"github.com/Dreamacro/clash/adapter/outbound"
@@ -30,6 +31,7 @@ import (
 	"github.com/Dreamacro/clash/component/trie"
 	C "github.com/Dreamacro/clash/constant"
 	providerTypes "github.com/Dreamacro/clash/constant/provider"
+	snifferTypes "github.com/Dreamacro/clash/constant/sniffer"
 	"github.com/Dreamacro/clash/dns"
 	"github.com/Dreamacro/clash/log"
 	T "github.com/Dreamacro/clash/tunnel"
@@ -45,11 +47,14 @@ type General struct {
 	UnifiedDelay  bool
 	LogLevel      log.LogLevel `json:"log-level"`
 	IPv6          bool         `json:"ipv6"`
-	Interface     string       `json:"-"`
+	Interface     string       `json:"interface-name"`
 	RoutingMark   int          `json:"-"`
 	GeodataMode   bool         `json:"geodata-mode"`
 	GeodataLoader string       `json:"geodata-loader"`
 	TCPConcurrent bool         `json:"tcp-concurrent"`
+	EnableProcess bool         `json:"enable-process"`
+	Tun           Tun          `json:"tun"`
+	Sniffing      bool         `json:"sniffing"`
 }
 
 // Inbound config
@@ -96,12 +101,6 @@ type FallbackFilter struct {
 	GeoSite   []*router.DomainMatcher `yaml:"geosite"`
 }
 
-var (
-	GroupsList             = list.New()
-	ProxiesList            = list.New()
-	ParsingProxiesCallback func(groupsList *list.List, proxiesList *list.List)
-)
-
 // Profile config
 type Profile struct {
 	StoreSelected bool `yaml:"store-selected"`
@@ -116,6 +115,7 @@ type Tun struct {
 	DNSHijack           []netip.AddrPort `yaml:"dns-hijack" json:"dns-hijack"`
 	AutoRoute           bool             `yaml:"auto-route" json:"auto-route"`
 	AutoDetectInterface bool             `yaml:"auto-detect-interface" json:"auto-detect-interface"`
+	TunAddressPrefix    netip.Prefix     `yaml:"-" json:"-"`
 }
 
 // IPTables config
@@ -127,11 +127,10 @@ type IPTables struct {
 
 type Sniffer struct {
 	Enable      bool
-	Force       bool
-	Sniffers    []C.SnifferType
+	Sniffers    []sniffer.Type
 	Reverses    *trie.DomainTrie[bool]
 	ForceDomain *trie.DomainTrie[bool]
-	SkipSNI     *trie.DomainTrie[bool]
+	SkipDomain  *trie.DomainTrie[bool]
 	Ports       *[]utils.Range[uint16]
 }
 
@@ -209,8 +208,9 @@ type RawConfig struct {
 	GeodataMode        bool         `yaml:"geodata-mode"`
 	GeodataLoader      string       `yaml:"geodata-loader"`
 	TCPConcurrent      bool         `yaml:"tcp-concurrent" json:"tcp-concurrent"`
+	EnableProcess      bool         `yaml:"enable-process" json:"enable-process"`
 
-	Sniffer       SnifferRaw                `yaml:"sniffer"`
+	Sniffer       RawSniffer                `yaml:"sniffer"`
 	ProxyProvider map[string]map[string]any `yaml:"proxy-providers"`
 	RuleProvider  map[string]map[string]any `yaml:"rule-providers"`
 	Hosts         map[string]string         `yaml:"hosts"`
@@ -219,18 +219,23 @@ type RawConfig struct {
 	IPTables      IPTables                  `yaml:"iptables"`
 	Experimental  Experimental              `yaml:"experimental"`
 	Profile       Profile                   `yaml:"profile"`
+	GeoXUrl       RawGeoXUrl                `yaml:"geox-url"`
 	Proxy         []map[string]any          `yaml:"proxies"`
 	ProxyGroup    []map[string]any          `yaml:"proxy-groups"`
 	Rule          []string                  `yaml:"rules"`
 }
 
-type SnifferRaw struct {
+type RawGeoXUrl struct {
+	GeoIp   string `yaml:"geoip" json:"geoip"`
+	Mmdb    string `yaml:"mmdb" json:"mmdb"`
+	GeoSite string `yaml:"geosite" json:"geosite"`
+}
+
+type RawSniffer struct {
 	Enable      bool     `yaml:"enable" json:"enable"`
 	Sniffing    []string `yaml:"sniffing" json:"sniffing"`
-	Force       bool     `yaml:"force" json:"force"`
-	Reverse     []string `yaml:"reverses" json:"reverses"`
 	ForceDomain []string `yaml:"force-domain" json:"force-domain"`
-	SkipSNI     []string `yaml:"skip-sni" json:"skip-sni"`
+	SkipDomain  []string `yaml:"skip-domain" json:"skip-domain"`
 	Ports       []string `yaml:"port-whitelist" json:"port-whitelist"`
 }
 
@@ -260,13 +265,14 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
 		Proxy:          []map[string]any{},
 		ProxyGroup:     []map[string]any{},
 		TCPConcurrent:  false,
+		EnableProcess:  true,
 		Tun: RawTun{
 			Enable:              false,
 			Device:              "",
-			AutoDetectInterface: true,
 			Stack:               C.TunGvisor,
 			DNSHijack:           []string{"0.0.0.0:53"}, // default hijack all dns query
-			AutoRoute:           true,
+			AutoRoute:           false,
+			AutoDetectInterface: false,
 		},
 		IPTables: IPTables{
 			Enable:           false,
@@ -300,17 +306,20 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
 				"www.msftconnecttest.com",
 			},
 		},
-		Sniffer: SnifferRaw{
+		Sniffer: RawSniffer{
 			Enable:      false,
-			Force:       false,
 			Sniffing:    []string{},
-			Reverse:     []string{},
 			ForceDomain: []string{},
-			SkipSNI:     []string{},
+			SkipDomain:  []string{},
 			Ports:       []string{},
 		},
 		Profile: Profile{
 			StoreSelected: true,
+		},
+		GeoXUrl: RawGeoXUrl{
+			GeoIp:   "https://ghproxy.com/https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geoip.dat",
+			Mmdb:    "https://ghproxy.com/https://raw.githubusercontent.com/Loyalsoldier/geoip/release/Country.mmdb",
+			GeoSite: "https://ghproxy.com/https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geosite.dat",
 		},
 	}
 
@@ -334,12 +343,6 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 		return nil, err
 	}
 	config.General = general
-
-	tunCfg, err := parseTun(rawCfg.Tun, config.General)
-	if err != nil {
-		return nil, err
-	}
-	config.Tun = tunCfg
 
 	dialer.DefaultInterface.Store(config.General.Interface)
 
@@ -368,6 +371,12 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 		return nil, err
 	}
 	config.DNS = dnsCfg
+
+	tunCfg, err := parseTun(rawCfg.Tun, config.General, dnsCfg)
+	if err != nil {
+		return nil, err
+	}
+	config.Tun = tunCfg
 
 	config.Users = parseAuthentication(rawCfg.Authentication)
 
@@ -417,6 +426,7 @@ func parseGeneral(cfg *RawConfig) (*General, error) {
 		GeodataMode:   cfg.GeodataMode,
 		GeodataLoader: cfg.GeodataLoader,
 		TCPConcurrent: cfg.TCPConcurrent,
+		EnableProcess: cfg.EnableProcess,
 	}, nil
 }
 
@@ -428,8 +438,8 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	providersConfig := cfg.ProxyProvider
 
 	var proxyList []string
-	_proxiesList := list.New()
-	_groupsList := list.New()
+	proxiesList := list.New()
+	groupsList := list.New()
 
 	proxies["DIRECT"] = adapter.NewProxy(outbound.NewDirect())
 	proxies["REJECT"] = adapter.NewProxy(outbound.NewReject())
@@ -449,7 +459,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 		}
 		proxies[proxy.Name()] = proxy
 		proxyList = append(proxyList, proxy.Name())
-		_proxiesList.PushBack(mapping)
+		proxiesList.PushBack(mapping)
 	}
 
 	// keep the original order of ProxyGroups in config file
@@ -459,7 +469,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 			return nil, nil, fmt.Errorf("proxy group %d: missing name", idx)
 		}
 		proxyList = append(proxyList, groupName)
-		_groupsList.PushBack(mapping)
+		groupsList.PushBack(mapping)
 	}
 
 	// check if any loop exists and sort the ProxyGroups
@@ -514,12 +524,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 		[]providerTypes.ProxyProvider{pd},
 	)
 	proxies["GLOBAL"] = adapter.NewProxy(global)
-	ProxiesList = _proxiesList
-	GroupsList = _groupsList
-	if ParsingProxiesCallback != nil {
-		// refresh tray menu
-		go ParsingProxiesCallback(GroupsList, ProxiesList)
-	}
+
 	return proxies, providersMap, nil
 }
 
@@ -528,7 +533,7 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 	log.Infoln("Geodata Loader mode: %s", geodata.LoaderName())
 	// parse rule provider
 	for name, mapping := range cfg.RuleProvider {
-		rp, err := RP.ParseRuleProvider(name, mapping)
+		rp, err := RP.ParseRuleProvider(name, mapping, R.ParseRule)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -539,7 +544,6 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 
 	var rules []C.Rule
 	rulesConfig := cfg.Rule
-	mode := cfg.Mode
 
 	// parse rules
 	for idx, line := range rulesConfig {
@@ -550,10 +554,6 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 			params   []string
 			ruleName = strings.ToUpper(rule[0])
 		)
-
-		if mode == T.Script && ruleName != "GEOSITE" {
-			continue
-		}
 
 		l := len(rule)
 
@@ -583,13 +583,6 @@ func parseRules(cfg *RawConfig, proxies map[string]C.Proxy) ([]C.Rule, map[strin
 		}
 
 		params = trimArr(params)
-
-		if ruleName == "GEOSITE" {
-			if err := initGeoSite(); err != nil {
-				return nil, nil, fmt.Errorf("can't initial GeoSite: %s", err)
-			}
-			initMode = false
-		}
 		parsed, parseErr := R.ParseRule(ruleName, payload, target, params)
 		if parseErr != nil {
 			return nil, nil, fmt.Errorf("rules[%d] [%s] error: %s", idx, line, parseErr.Error())
@@ -730,7 +723,7 @@ func parseFallbackIPCIDR(ips []string) ([]*netip.Prefix, error) {
 func parseFallbackGeoSite(countries []string, rules []C.Rule) ([]*router.DomainMatcher, error) {
 	var sites []*router.DomainMatcher
 	if len(countries) > 0 {
-		if err := initGeoSite(); err != nil {
+		if err := geodata.InitGeoSite(); err != nil {
 			return nil, fmt.Errorf("can't initial GeoSite: %s", err)
 		}
 	}
@@ -883,7 +876,7 @@ func parseAuthentication(rawRecords []string) []auth.AuthUser {
 	return users
 }
 
-func parseTun(rawTun RawTun, general *General) (*Tun, error) {
+func parseTun(rawTun RawTun, general *General, dnsCfg *DNS) (*Tun, error) {
 	if rawTun.Enable && rawTun.AutoDetectInterface {
 		autoDetectInterfaceName, err := commons.GetAutoDetectInterface()
 		if err != nil {
@@ -910,6 +903,13 @@ func parseTun(rawTun RawTun, general *General) (*Tun, error) {
 		dnsHijack = append(dnsHijack, addrPort)
 	}
 
+	var tunAddressPrefix netip.Prefix
+	if dnsCfg.FakeIPRange != nil {
+		tunAddressPrefix = *dnsCfg.FakeIPRange.IPNet()
+	} else {
+		tunAddressPrefix = netip.MustParsePrefix("198.18.0.1/16")
+	}
+
 	return &Tun{
 		Enable:              rawTun.Enable,
 		Device:              rawTun.Device,
@@ -917,13 +917,13 @@ func parseTun(rawTun RawTun, general *General) (*Tun, error) {
 		DNSHijack:           dnsHijack,
 		AutoRoute:           rawTun.AutoRoute,
 		AutoDetectInterface: rawTun.AutoDetectInterface,
+		TunAddressPrefix:    tunAddressPrefix,
 	}, nil
 }
 
-func parseSniffer(snifferRaw SnifferRaw) (*Sniffer, error) {
+func parseSniffer(snifferRaw RawSniffer) (*Sniffer, error) {
 	sniffer := &Sniffer{
 		Enable: snifferRaw.Enable,
-		Force:  snifferRaw.Force,
 	}
 
 	var ports []utils.Range[uint16]
@@ -954,11 +954,11 @@ func parseSniffer(snifferRaw SnifferRaw) (*Sniffer, error) {
 
 	sniffer.Ports = &ports
 
-	loadSniffer := make(map[C.SnifferType]struct{})
+	loadSniffer := make(map[snifferTypes.Type]struct{})
 
 	for _, snifferName := range snifferRaw.Sniffing {
 		find := false
-		for _, snifferType := range C.SnifferList {
+		for _, snifferType := range snifferTypes.List {
 			if snifferType.String() == strings.ToUpper(snifferName) {
 				find = true
 				loadSniffer[snifferType] = struct{}{}
@@ -973,7 +973,6 @@ func parseSniffer(snifferRaw SnifferRaw) (*Sniffer, error) {
 	for st := range loadSniffer {
 		sniffer.Sniffers = append(sniffer.Sniffers, st)
 	}
-
 	sniffer.ForceDomain = trie.New[bool]()
 	for _, domain := range snifferRaw.ForceDomain {
 		err := sniffer.ForceDomain.Insert(domain, true)
@@ -982,33 +981,11 @@ func parseSniffer(snifferRaw SnifferRaw) (*Sniffer, error) {
 		}
 	}
 
-	sniffer.SkipSNI = trie.New[bool]()
-	for _, domain := range snifferRaw.SkipSNI {
-		err := sniffer.SkipSNI.Insert(domain, true)
+	sniffer.SkipDomain = trie.New[bool]()
+	for _, domain := range snifferRaw.SkipDomain {
+		err := sniffer.SkipDomain.Insert(domain, true)
 		if err != nil {
 			return nil, fmt.Errorf("error domian[%s] in force-domain, error:%v", domain, err)
-		}
-	}
-
-	// Compatibility, remove it when release
-	if strings.Contains(C.Version, "alpha") || strings.Contains(C.Version, "develop") || strings.Contains(C.Version, "1.10.0") {
-		log.Warnln("Sniffer param force and reverses deprecated, will be removed in the release version, see https://github.com/MetaCubeX/Clash.Meta/commit/48a01adb7a4f38974b9d9639f931d0d245aebf28")
-		if snifferRaw.Force {
-			// match all domain
-			sniffer.ForceDomain.Insert("+", true)
-			for _, domain := range snifferRaw.Reverse {
-				err := sniffer.SkipSNI.Insert(domain, true)
-				if err != nil {
-					return nil, fmt.Errorf("error domian[%s], error:%v", domain, err)
-				}
-			}
-		} else {
-			for _, domain := range snifferRaw.Reverse {
-				err := sniffer.ForceDomain.Insert(domain, true)
-				if err != nil {
-					return nil, fmt.Errorf("error domian[%s], error:%v", domain, err)
-				}
-			}
 		}
 	}
 

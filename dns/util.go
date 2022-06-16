@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/Dreamacro/clash/common/cache"
@@ -116,6 +117,14 @@ func msgToIP(msg *D.Msg) []netip.Addr {
 	return ips
 }
 
+func msgToDomain(msg *D.Msg) string {
+	if len(msg.Question) > 0 {
+		return strings.TrimRight(msg.Question[0].Name, ".")
+	}
+
+	return ""
+}
+
 type wrapPacketConn struct {
 	net.PacketConn
 	rAddr net.Addr
@@ -134,10 +143,11 @@ func (wpc *wrapPacketConn) RemoteAddr() net.Addr {
 	return wpc.rAddr
 }
 
-func dialContextWithProxyAdapter(ctx context.Context, adapterName string, network string, dstIP netip.Addr, port string, opts ...dialer.Option) (net.Conn, error) {
+func dialContextExtra(ctx context.Context, adapterName string, network string, dstIP netip.Addr, port string, opts ...dialer.Option) (net.Conn, error) {
 	adapter, ok := tunnel.Proxies()[adapterName]
 	if !ok {
-		return nil, fmt.Errorf("proxy adapter [%s] not found", adapterName)
+		opts = append(opts, dialer.WithInterface(adapterName))
+		adapter, _ = tunnel.Proxies()[tunnel.Direct.String()]
 	}
 
 	networkType := C.TCP

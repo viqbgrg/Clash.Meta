@@ -2,12 +2,11 @@ package outbound
 
 import (
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/gofrs/uuid"
 	"net"
-	"regexp"
+	"strings"
 
 	"github.com/Dreamacro/clash/component/dialer"
 	C "github.com/Dreamacro/clash/constant"
@@ -20,11 +19,26 @@ type Base struct {
 	tp    C.AdapterType
 	udp   bool
 	rmark int
+	id    string
 }
 
 // Name implements C.ProxyAdapter
 func (b *Base) Name() string {
 	return b.name
+}
+
+// Id implements C.ProxyAdapter
+func (b *Base) Id() string {
+	if b.id == "" {
+		id, err := uuid.NewV6()
+		if err != nil {
+			b.id = b.name
+		} else {
+			b.id = id.String()
+		}
+	}
+
+	return b.id
 }
 
 // Type implements C.ProxyAdapter
@@ -35,6 +49,10 @@ func (b *Base) Type() C.AdapterType {
 // StreamConn implements C.ProxyAdapter
 func (b *Base) StreamConn(c net.Conn, metadata *C.Metadata) (net.Conn, error) {
 	return c, errors.New("no support")
+}
+
+func (b *Base) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.Conn, error) {
+	return nil, errors.New("no support")
 }
 
 // ListenPacketContext implements C.ProxyAdapter
@@ -61,6 +79,7 @@ func (b *Base) SupportUDP() bool {
 func (b *Base) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]string{
 		"type": b.Type().String(),
+		"id":   b.Id(),
 	})
 }
 
@@ -114,7 +133,12 @@ func NewBase(opt BaseOption) *Base {
 
 type conn struct {
 	net.Conn
-	chain C.Chain
+	chain                   C.Chain
+	actualRemoteDestination string
+}
+
+func (c *conn) RemoteDestination() string {
+	return c.actualRemoteDestination
 }
 
 // Chains implements C.Connection
@@ -128,12 +152,17 @@ func (c *conn) AppendToChains(a C.ProxyAdapter) {
 }
 
 func NewConn(c net.Conn, a C.ProxyAdapter) C.Conn {
-	return &conn{c, []string{a.Name()}}
+	return &conn{c, []string{a.Name()}, parseRemoteDestination(a.Addr())}
 }
 
 type packetConn struct {
 	net.PacketConn
-	chain C.Chain
+	chain                   C.Chain
+	actualRemoteDestination string
+}
+
+func (c *packetConn) RemoteDestination() string {
+	return c.actualRemoteDestination
 }
 
 // Chains implements C.Connection
@@ -147,30 +176,17 @@ func (c *packetConn) AppendToChains(a C.ProxyAdapter) {
 }
 
 func newPacketConn(pc net.PacketConn, a C.ProxyAdapter) C.PacketConn {
-	return &packetConn{pc, []string{a.Name()}}
+	return &packetConn{pc, []string{a.Name()}, parseRemoteDestination(a.Addr())}
 }
 
-func uuidMap(str string) string {
-	match, _ := regexp.MatchString(`[\da-f]{8}(-[\da-f]{4}){3}-[\da-f]{12}$`, str)
-	if !match {
-		var Nil [16]byte
-		h := sha1.New()
-		h.Write(Nil[:])
-		h.Write([]byte(str))
-		u := h.Sum(nil)[:16]
-		u[6] = (u[6] & 0x0f) | (5 << 4)
-		u[8] = u[8]&(0xff>>2) | (0x02 << 6)
-		buf := make([]byte, 36)
-		hex.Encode(buf[0:8], u[0:4])
-		buf[8] = '-'
-		hex.Encode(buf[9:13], u[4:6])
-		buf[13] = '-'
-		hex.Encode(buf[14:18], u[6:8])
-		buf[18] = '-'
-		hex.Encode(buf[19:23], u[8:10])
-		buf[23] = '-'
-		hex.Encode(buf[24:], u[10:])
-		return string(buf)
+func parseRemoteDestination(addr string) string {
+	if dst, _, err := net.SplitHostPort(addr); err == nil {
+		return dst
+	} else {
+		if addrError, ok := err.(*net.AddrError); ok && strings.Contains(addrError.Err, "missing port") {
+			return dst
+		} else {
+			return ""
+		}
 	}
-	return str
 }

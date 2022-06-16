@@ -19,7 +19,7 @@ const (
 	ALLNet
 
 	HTTP Type = iota
-	HTTPCONNECT
+	HTTPS
 	SOCKS4
 	SOCKS5
 	REDIR
@@ -49,8 +49,8 @@ func (t Type) String() string {
 	switch t {
 	case HTTP:
 		return "HTTP"
-	case HTTPCONNECT:
-		return "HTTP Connect"
+	case HTTPS:
+		return "HTTPS"
 	case SOCKS4:
 		return "Socks4"
 	case SOCKS5:
@@ -66,6 +66,31 @@ func (t Type) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+func ParseType(t string) (*Type, error) {
+	var res Type
+	switch t {
+	case "HTTP":
+		res = HTTP
+	case "HTTPS":
+		res = HTTPS
+	case "SOCKS4":
+		res = SOCKS4
+	case "SOCKS5":
+		res = SOCKS5
+	case "REDIR":
+		res = REDIR
+	case "TPROXY":
+		res = TPROXY
+	case "TUN":
+		res = TUN
+	case "INNER":
+		res = INNER
+	default:
+		return nil, fmt.Errorf("unknown type: %s", t)
+	}
+	return &res, nil
 }
 
 func (t Type) MarshalJSON() ([]byte, error) {
@@ -86,6 +111,7 @@ type Metadata struct {
 	Uid         *int32     `json:"uid"`
 	Process     string     `json:"process"`
 	ProcessPath string     `json:"processPath"`
+	RemoteDst   string     `json:"remoteDestination"`
 }
 
 func (m *Metadata) RemoteAddress() string {
@@ -104,7 +130,7 @@ func (m *Metadata) SourceDetail() string {
 	if m.Process != "" && m.Uid != nil {
 		return fmt.Sprintf("%s(%s, uid=%d)", m.SourceAddress(), m.Process, *m.Uid)
 	} else if m.Uid != nil {
-		return fmt.Sprintf("%s(%d)", m.SourceAddress(), *m.Uid)
+		return fmt.Sprintf("%s(uid=%d)", m.SourceAddress(), *m.Uid)
 	} else if m.Process != "" {
 		return fmt.Sprintf("%s(%s)", m.SourceAddress(), m.Process)
 	} else {

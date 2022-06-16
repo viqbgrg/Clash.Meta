@@ -9,14 +9,16 @@ const (
 	GEOIP
 	IPCIDR
 	SrcIPCIDR
+	IPSuffix
+	SrcIPSuffix
 	SrcPort
 	DstPort
 	Process
 	ProcessPath
-	Script
 	RuleSet
 	Network
 	Uid
+	INTYPE
 	MATCH
 	AND
 	OR
@@ -41,6 +43,10 @@ func (rt RuleType) String() string {
 		return "IPCIDR"
 	case SrcIPCIDR:
 		return "SrcIPCIDR"
+	case IPSuffix:
+		return "IPSuffix"
+	case SrcIPSuffix:
+		return "SrcIPSuffix"
 	case SrcPort:
 		return "SrcPort"
 	case DstPort:
@@ -49,8 +55,6 @@ func (rt RuleType) String() string {
 		return "Process"
 	case ProcessPath:
 		return "ProcessPath"
-	case Script:
-		return "Script"
 	case MATCH:
 		return "Match"
 	case RuleSet:
@@ -59,6 +63,8 @@ func (rt RuleType) String() string {
 		return "Network"
 	case Uid:
 		return "Uid"
+	case INTYPE:
+		return "InType"
 	case AND:
 		return "AND"
 	case OR:

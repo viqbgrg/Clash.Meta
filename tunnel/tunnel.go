@@ -24,14 +24,15 @@ import (
 )
 
 var (
-	tcpQueue      = make(chan C.ConnContext, 200)
-	udpQueue      = make(chan *inbound.PacketAdapter, 200)
-	natTable      = nat.New()
-	rules         []C.Rule
-	proxies       = make(map[string]C.Proxy)
-	providers     map[string]provider.ProxyProvider
-	ruleProviders map[string]provider.RuleProvider
-	configMux     sync.RWMutex
+	tcpQueue       = make(chan C.ConnContext, 200)
+	udpQueue       = make(chan *inbound.PacketAdapter, 200)
+	natTable       = nat.New()
+	rules          []C.Rule
+	proxies        = make(map[string]C.Proxy)
+	providers      map[string]provider.ProxyProvider
+	ruleProviders  map[string]provider.RuleProvider
+	sniffingEnable bool
+	configMux      sync.RWMutex
 
 	// Outbound Rule
 	mode = Rule
@@ -41,6 +42,18 @@ var (
 	procesCache string
 	failTotal   int
 )
+
+func SetSniffing(b bool) {
+	if sniffer.Dispatcher.Enable() {
+		configMux.Lock()
+		sniffingEnable = b
+		configMux.Unlock()
+	}
+}
+
+func IsSniffing() bool {
+	return sniffingEnable
+}
 
 func init() {
 	go process()
@@ -95,6 +108,7 @@ func UpdateProxies(newProxies map[string]C.Proxy, newProviders map[string]provid
 func UpdateSniffer(dispatcher *sniffer.SnifferDispatcher) {
 	configMux.Lock()
 	sniffer.Dispatcher = *dispatcher
+	sniffingEnable = true
 	configMux.Unlock()
 }
 
@@ -169,7 +183,7 @@ func preHandleMetadata(metadata *C.Metadata) error {
 	// pre resolve process name
 	srcPort, err := strconv.Atoi(metadata.SrcPort)
 	if err == nil && P.ShouldFindProcess(metadata) {
-		path, err := P.FindProcessName(metadata.NetWork.String(), metadata.SrcIP, srcPort)
+		uid, path, err := P.FindProcessName(metadata.NetWork.String(), metadata.SrcIP, srcPort)
 		if err != nil {
 			if failTotal < 20 {
 				log.Debugln("[Process] find process %s: %v", metadata.String(), err)
@@ -178,7 +192,10 @@ func preHandleMetadata(metadata *C.Metadata) error {
 		} else {
 			metadata.Process = filepath.Base(path)
 			metadata.ProcessPath = path
-			if procesCache == metadata.Process {
+			if uid != -1 {
+				metadata.Uid = &uid
+			}
+			if procesCache != metadata.Process {
 				log.Debugln("[Process] %s from process %s", metadata.String(), path)
 			}
 			procesCache = metadata.Process
@@ -269,6 +286,7 @@ func handleUDPConn(packet *inbound.PacketAdapter) {
 			return
 		}
 		pCtx.InjectPacketConn(rawPc)
+
 		pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule)
 
 		switch true {
@@ -278,8 +296,6 @@ func handleUDPConn(packet *inbound.PacketAdapter) {
 			} else {
 				log.Infoln("[UDP] %s --> %s match %s using %s", metadata.SourceDetail(), metadata.RemoteAddress(), rule.Payload(), rawPc.Chains().String())
 			}
-		case mode == Script:
-			log.Infoln("[UDP] %s --> %s using SCRIPT %s", metadata.SourceDetail(), metadata.RemoteAddress(), rawPc.Chains().String())
 		case mode == Global:
 			log.Infoln("[UDP] %s --> %s using GLOBAL", metadata.SourceDetail(), metadata.RemoteAddress())
 		case mode == Direct:
@@ -311,7 +327,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 		return
 	}
 
-	if sniffer.Dispatcher.Enable() {
+	if sniffer.Dispatcher.Enable() && sniffingEnable {
 		sniffer.Dispatcher.TCPSniff(connCtx.Conn(), metadata)
 	}
 
@@ -332,6 +348,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 		}
 		return
 	}
+
 	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule)
 	defer func(remoteConn C.Conn) {
 		_ = remoteConn.Close()
@@ -344,8 +361,6 @@ func handleTCPConn(connCtx C.ConnContext) {
 		} else {
 			log.Infoln("[TCP] %s --> %s match %s using %s", metadata.SourceDetail(), metadata.RemoteAddress(), rule.RuleType().String(), remoteConn.Chains().String())
 		}
-	case mode == Script:
-		log.Infoln("[TCP] %s --> %s using SCRIPT %s", metadata.SourceDetail(), metadata.RemoteAddress(), remoteConn.Chains().String())
 	case mode == Global:
 		log.Infoln("[TCP] %s --> %s using GLOBAL", metadata.SourceDetail(), metadata.RemoteAddress())
 	case mode == Direct:
@@ -418,5 +433,5 @@ func match(metadata *C.Metadata) (C.Proxy, C.Rule, error) {
 		}
 	}
 
-	return proxies["REJECT"], nil, nil
+	return proxies["DIRECT"], nil, nil
 }

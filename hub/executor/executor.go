@@ -2,6 +2,8 @@ package executor
 
 import (
 	"fmt"
+	"github.com/Dreamacro/clash/component/process"
+	"github.com/Dreamacro/clash/listener/inner"
 	"net/netip"
 	"os"
 	"runtime"
@@ -76,17 +78,22 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
-	updateDNS(cfg.DNS, cfg.Tun)
-	updateGeneral(cfg.General, force)
-	updateIPTables(cfg)
-	updateTun(cfg.Tun, cfg.DNS)
-	updateExperimental(cfg)
 	updateHosts(cfg.Hosts)
+	initInnerTcp()
+	updateDNS(cfg.DNS, cfg.General.IPv6)
 	loadProxyProvider(cfg.Providers)
 	updateProfile(cfg)
 	loadRuleProvider(cfg.RuleProviders)
+	updateGeneral(cfg.General, force)
+	updateIPTables(cfg)
+	updateTun(cfg.Tun)
+	updateExperimental(cfg)
 
 	log.SetLevel(cfg.General.LogLevel)
+}
+
+func initInnerTcp() {
+	inner.New(tunnel.TCPIn())
 }
 
 func GetGeneral() *config.General {
@@ -111,6 +118,10 @@ func GetGeneral() *config.General {
 		LogLevel:      log.Level(),
 		IPv6:          !resolver.DisableIPv6,
 		GeodataLoader: G.LoaderName(),
+		Tun:           P.GetTunConf(),
+		Interface:     dialer.DefaultInterface.Load(),
+		Sniffing:      tunnel.IsSniffing(),
+		TCPConcurrent: dialer.GetDial(),
 	}
 
 	return general
@@ -118,7 +129,18 @@ func GetGeneral() *config.General {
 
 func updateExperimental(c *config.Config) {}
 
-func updateDNS(c *config.DNS, t *config.Tun) {
+func updateDNS(c *config.DNS, generalIPv6 bool) {
+	if !c.Enable {
+		resolver.DisableIPv6 = !generalIPv6
+		resolver.DefaultResolver = nil
+		resolver.DefaultHostMapper = nil
+		resolver.DefaultLocalServer = nil
+		dns.ReCreateServer("", nil, nil)
+		return
+	} else {
+		resolver.DisableIPv6 = !c.IPv6
+	}
+
 	cfg := dns.Config{
 		Main:         c.NameServer,
 		Fallback:     c.Fallback,
@@ -138,8 +160,6 @@ func updateDNS(c *config.DNS, t *config.Tun) {
 		ProxyServer: c.ProxyServerNameserver,
 	}
 
-	resolver.DisableIPv6 = !cfg.IPv6
-
 	r := dns.NewResolver(cfg)
 	pr := dns.NewProxyServerHostResolver(r)
 	m := dns.NewEnhancer(cfg)
@@ -151,27 +171,13 @@ func updateDNS(c *config.DNS, t *config.Tun) {
 
 	resolver.DefaultResolver = r
 	resolver.DefaultHostMapper = m
+	resolver.DefaultLocalServer = dns.NewLocalServer(r, m)
 
 	if pr.HasProxyServer() {
 		resolver.ProxyServerHostResolver = pr
 	}
 
-	if t.Enable {
-		resolver.DefaultLocalServer = dns.NewLocalServer(r, m)
-		log.Infoln("DNS enable IPv6 resolve")
-	}
-
-	if c.Enable {
-		dns.ReCreateServer(c.Listen, r, m)
-	} else {
-		if !t.Enable {
-			resolver.DefaultResolver = nil
-			resolver.DefaultHostMapper = nil
-			resolver.DefaultLocalServer = nil
-			resolver.ProxyServerHostResolver = nil
-		}
-		dns.ReCreateServer("", nil, nil)
-	}
+	dns.ReCreateServer(c.Listen, r, m)
 }
 
 func updateHosts(tree *trie.DomainTrie[netip.Addr]) {
@@ -193,7 +199,7 @@ func loadProvider(pv provider.Provider) {
 		log.Infoln("Start initial provider %s", (pv).Name())
 	}
 
-	if err := (pv).Initial(); err != nil {
+	if err := pv.Initial(); err != nil {
 		switch pv.Type() {
 		case provider.Proxy:
 			{
@@ -209,24 +215,46 @@ func loadProvider(pv provider.Provider) {
 }
 
 func loadRuleProvider(ruleProviders map[string]provider.RuleProvider) {
+	wg := sync.WaitGroup{}
+	ch := make(chan struct{}, concurrentCount)
 	for _, ruleProvider := range ruleProviders {
-		loadProvider(ruleProvider)
+		ruleProvider := ruleProvider
+		wg.Add(1)
+		ch <- struct{}{}
+		go func() {
+			defer func() { <-ch; wg.Done() }()
+			loadProvider(ruleProvider)
+
+		}()
 	}
+
+	wg.Wait()
 }
 
-func loadProxyProvider(ruleProviders map[string]provider.ProxyProvider) {
-	for _, ruleProvider := range ruleProviders {
-		loadProvider(ruleProvider)
+func loadProxyProvider(proxyProviders map[string]provider.ProxyProvider) {
+	// limit concurrent size
+	wg := sync.WaitGroup{}
+	ch := make(chan struct{}, concurrentCount)
+	for _, proxyProvider := range proxyProviders {
+		proxyProvider := proxyProvider
+		wg.Add(1)
+		ch <- struct{}{}
+		go func() {
+			defer func() { <-ch; wg.Done() }()
+			loadProvider(proxyProvider)
+		}()
 	}
+
+	wg.Wait()
 }
 
-func updateTun(tun *config.Tun, dns *config.DNS) {
-	P.ReCreateTun(tun, dns, tunnel.TCPIn(), tunnel.UDPIn())
+func updateTun(tun *config.Tun) {
+	P.ReCreateTun(tun, tunnel.TCPIn(), tunnel.UDPIn())
 }
 
 func updateSniffer(sniffer *config.Sniffer) {
 	if sniffer.Enable {
-		dispatcher, err := SNI.NewSnifferDispatcher(sniffer.Sniffers, sniffer.ForceDomain, sniffer.SkipSNI, sniffer.Ports)
+		dispatcher, err := SNI.NewSnifferDispatcher(sniffer.Sniffers, sniffer.ForceDomain, sniffer.SkipDomain, sniffer.Ports)
 		if err != nil {
 			log.Warnln("initial sniffer failed, err:%v", err)
 		}
@@ -246,6 +274,7 @@ func updateSniffer(sniffer *config.Sniffer) {
 
 func updateGeneral(general *config.General, force bool) {
 	log.SetLevel(general.LogLevel)
+	process.EnableFindProcess(general.EnableProcess)
 	tunnel.SetMode(general.Mode)
 	dialer.DisableIPv6 = !general.IPv6
 	if !dialer.DisableIPv6 {
@@ -325,7 +354,7 @@ func patchSelectGroup(proxies map[string]C.Proxy) {
 			continue
 		}
 
-		selector, ok := outbound.ProxyAdapter.(*outboundgroup.Selector)
+		selector, ok := outbound.ProxyAdapter.(outboundgroup.SelectAble)
 		if !ok {
 			continue
 		}
@@ -400,7 +429,7 @@ func updateIPTables(cfg *config.Config) {
 }
 
 func Shutdown() {
-	P.Cleanup()
+	P.Cleanup(false)
 	tproxy.CleanupTProxyIPTables()
 	resolver.StoreFakePoolState()
 

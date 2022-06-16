@@ -138,6 +138,8 @@ func (dc *quicClient) openSession() (quic.Connection, error) {
 	quicConfig := &quic.Config{
 		ConnectionIDLength:   12,
 		HandshakeIdleTimeout: time.Second * 8,
+		MaxIncomingStreams:   4,
+		MaxIdleTimeout:       time.Second * 45,
 	}
 
 	log.Debugln("opening session to %s", dc.addr)
@@ -165,7 +167,7 @@ func (dc *quicClient) openSession() (quic.Connection, error) {
 			return nil, err
 		}
 	} else {
-		conn, err := dialContextWithProxyAdapter(context.Background(), dc.proxyAdapter, "udp", ip, port)
+		conn, err := dialContextExtra(context.Background(), dc.proxyAdapter, "udp", ip, port)
 		if err != nil {
 			return nil, err
 		}
@@ -175,7 +177,7 @@ func (dc *quicClient) openSession() (quic.Connection, error) {
 			return nil, fmt.Errorf("quio create packet failed")
 		}
 
-		udp = wrapConn.PacketConn
+		udp = wrapConn
 	}
 
 	session, err := quic.Dial(udp, &udpAddr, host, tlsConfig, quicConfig)

@@ -2,6 +2,7 @@ package sniffer
 
 import (
 	"errors"
+	"github.com/Dreamacro/clash/constant/sniffer"
 	"net"
 	"net/netip"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 var (
 	ErrorUnsupportedSniffer = errors.New("unsupported sniffer")
 	ErrorSniffFailed        = errors.New("all sniffer failed")
+	ErrNoClue               = errors.New("not enough information for making a decision")
 )
 
 var Dispatcher SnifferDispatcher
@@ -27,7 +29,7 @@ type (
 	SnifferDispatcher struct {
 		enable bool
 
-		sniffers []C.Sniffer
+		sniffers []sniffer.Sniffer
 
 		foreDomain *trie.DomainTrie[bool]
 		skipSNI    *trie.DomainTrie[bool]
@@ -84,7 +86,6 @@ func (sd *SnifferDispatcher) replaceDomain(metadata *C.Metadata, host string) {
 	metadata.Host = host
 	metadata.DNSMode = C.DNSMapping
 	resolver.InsertHostByIP(metadata.DstIP, host)
-	metadata.DstIP = netip.Addr{}
 }
 
 func (sd *SnifferDispatcher) Enable() bool {
@@ -94,16 +95,16 @@ func (sd *SnifferDispatcher) Enable() bool {
 func (sd *SnifferDispatcher) sniffDomain(conn *CN.BufferedConn, metadata *C.Metadata) (string, error) {
 	for _, sniffer := range sd.sniffers {
 		if sniffer.SupportNetwork() == C.TCP {
-			conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 			_, err := conn.Peek(1)
-			conn.SetReadDeadline(time.Time{})
+			_ = conn.SetReadDeadline(time.Time{})
 			if err != nil {
 				_, ok := err.(*net.OpError)
 				if ok {
-					log.Errorln("[Sniffer] [%s] Maybe read timeout, Consider adding skip", metadata.DstIP.String())
-					conn.Close()
+					log.Errorln("[Sniffer] [%s] may not have any sent data, Consider adding skip", metadata.DstIP.String())
+					_ = conn.Close()
 				}
-				log.Errorln("[Sniffer] %v", err)
+
 				return "", err
 			}
 
@@ -116,7 +117,13 @@ func (sd *SnifferDispatcher) sniffDomain(conn *CN.BufferedConn, metadata *C.Meta
 
 			host, err := sniffer.SniffTCP(bytes)
 			if err != nil {
-				log.Debugln("[Sniffer] [%s] Sniff data failed %s", sniffer.Protocol(), metadata.DstIP)
+				//log.Debugln("[Sniffer] [%s] Sniff data failed %s", sniffer.Protocol(), metadata.DstIP)
+				continue
+			}
+
+			_, err = netip.ParseAddr(host)
+			if err == nil {
+				//log.Debugln("[Sniffer] [%s] Sniff data failed %s", sniffer.Protocol(), metadata.DstIP)
 				continue
 			}
 
@@ -135,7 +142,7 @@ func NewCloseSnifferDispatcher() (*SnifferDispatcher, error) {
 	return &dispatcher, nil
 }
 
-func NewSnifferDispatcher(needSniffer []C.SnifferType, forceDomain *trie.DomainTrie[bool],
+func NewSnifferDispatcher(needSniffer []sniffer.Type, forceDomain *trie.DomainTrie[bool],
 	skipSNI *trie.DomainTrie[bool], ports *[]utils.Range[uint16]) (*SnifferDispatcher, error) {
 	dispatcher := SnifferDispatcher{
 		enable:     true,
@@ -157,10 +164,12 @@ func NewSnifferDispatcher(needSniffer []C.SnifferType, forceDomain *trie.DomainT
 	return &dispatcher, nil
 }
 
-func NewSniffer(name C.SnifferType) (C.Sniffer, error) {
+func NewSniffer(name sniffer.Type) (sniffer.Sniffer, error) {
 	switch name {
-	case C.TLS:
+	case sniffer.TLS:
 		return &TLSSniffer{}, nil
+	case sniffer.HTTP:
+		return &HTTPSniffer{}, nil
 	default:
 		return nil, ErrorUnsupportedSniffer
 	}
