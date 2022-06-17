@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,52 +26,43 @@ const (
 	V      = "[V]"
 )
 
-type TinyConfig struct {
-	HttpOpts  TinyOpts
-	HttpsOpts TinyOpts
-}
-
 type Tiny struct {
 	*Base
-	httpOpts  TinyOpts
-	httpsOpts TinyOpts
-}
-
-type TinyOpts struct {
-	Server    string   `proxy:"server"`
-	Port      int      `proxy:"port"`
-	HttpDel   []string `proxy:"http-del,omitempty"`
-	HttpFirst string   `proxy:"http-first"`
+	HttpDel   []string
+	HttpFirst string
+	Connect   bool
 }
 
 type tinyHttpConn struct {
 	net.Conn
-	cfg    *TinyConfig
+	cfg    *Tiny
 	reader *bufio.Reader
 }
 
 type TinyOption struct {
 	BasicOption
 	Name      string   `proxy:"name"`
-	HttpOpts  TinyOpts `proxy:"http-opts,omitempty"`
-	HttpsOpts TinyOpts `proxy:"https-opts,omitempty"`
+	Server    string   `proxy:"server"`
+	Port      int      `proxy:"port"`
+	Connect   bool     `proxy:"connect,omitempty"`
+	HttpDel   []string `proxy:"http-del,omitempty"`
+	HttpFirst string   `proxy:"http-first"`
 }
 
 // StreamConn implements C.ProxyAdapter
 func (h *Tiny) StreamConn(c net.Conn, metadata *C.Metadata) (net.Conn, error) {
-	cfg := &TinyConfig{
-		HttpsOpts: h.httpsOpts,
-		HttpOpts:  h.httpOpts,
+	t := &tinyHttpConn{
+		Conn: c,
+		cfg:  h,
 	}
-	c = StreamHTTPConn(c, cfg)
-	return c, nil
+	if err := t.shakeHand(metadata, t); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 // DialContext implements C.ProxyAdapter
 func (h *Tiny) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (_ C.Conn, err error) {
-	if metadata.DstPort == "80" {
-		h.addr = net.JoinHostPort(h.httpOpts.Server, strconv.Itoa(h.httpOpts.Port))
-	}
 	c, err := dialer.DialContext(ctx, "tcp", h.addr, h.Base.DialOptions(opts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("%s connect error: %w", h.addr, err)
@@ -85,6 +77,11 @@ func (h *Tiny) DialContext(ctx context.Context, metadata *C.Metadata, opts ...di
 	}
 
 	return NewConn(c, h), nil
+}
+
+// Reader implements io.Reader.
+func (hc *tinyHttpConn) Read(b []byte) (int, error) {
+	return hc.Conn.Read(b)
 }
 
 // Write implements io.Writer.
@@ -110,45 +107,8 @@ func (hc *tinyHttpConn) Write(d []byte) (int, error) {
 	//return len(d), nil
 }
 
-func delFirst(first []byte) []byte {
-	index := bytes.IndexByte(first, '\n')
-	first = first[index+1:]
-	return first
-}
-
-func delHeader(first []byte, replaceWord []string) []byte {
-	text := string(first)
-	for _, s := range replaceWord {
-		if s == "" {
-			continue
-		}
-		r := regexp.MustCompile(s + `.*\n`)
-		text = r.ReplaceAllString(text, "")
-	}
-	return []byte(text)
-}
-
-func isHttpHeader(header []byte) bool {
-	if bytes.HasPrefix(header, []byte("CONNECT")) == true ||
-		bytes.HasPrefix(header, []byte("GET")) == true ||
-		bytes.HasPrefix(header, []byte("POST")) == true ||
-		bytes.HasPrefix(header, []byte("HEAD")) == true ||
-		bytes.HasPrefix(header, []byte("PUT")) == true ||
-		bytes.HasPrefix(header, []byte("COPY")) == true ||
-		bytes.HasPrefix(header, []byte("DELETE")) == true ||
-		bytes.HasPrefix(header, []byte("MOVE")) == true ||
-		bytes.HasPrefix(header, []byte("OPTIONS")) == true ||
-		bytes.HasPrefix(header, []byte("LINK")) == true ||
-		bytes.HasPrefix(header, []byte("UNLINK")) == true ||
-		bytes.HasPrefix(header, []byte("TRACE")) == true ||
-		bytes.HasPrefix(header, []byte("PATCH")) == true ||
-		bytes.HasPrefix(header, []byte("WRAPPED")) == true {
-		return true
-	}
-	return false
-}
-
-func (hc *tinyHttpConn) shakeHand(addr string) error {
+func (hc *tinyHttpConn) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
+	addr := metadata.RemoteAddress()
 	req := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
@@ -157,13 +117,16 @@ func (hc *tinyHttpConn) shakeHand(addr string) error {
 		Host: addr,
 		Header: http.Header{
 			"Proxy-Connection": []string{"Keep-Alive"},
+			"X-T5-Auth":        []string{"88888888"},
+			"User-Agent":       []string{"okhttp/3.11.0 Dalvik/2.1.0 (Linux; U; Android 12;Build/RKQ1.200826.002) baiduboxapp/11.0.5.12 (Baidu; P1 11)"},
 		},
 	}
 
-	if err := req.Write(hc); err != nil {
+	if err := req.Write(rw); err != nil {
 		return err
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(hc), req)
+
+	resp, err := http.ReadResponse(bufio.NewReader(rw), req)
 	if err != nil {
 		return err
 	}
@@ -215,21 +178,52 @@ func parseRequestLine(payload []byte) (method []byte, uri []byte, version []byte
 	return firstLine[:s1], firstLine[s1+1 : s2], firstLine[s2+1:], header[s5:s6], true
 }
 
-func StreamHTTPConn(conn net.Conn, cfg *TinyConfig) net.Conn {
-	t := &tinyHttpConn{
-		Conn: conn,
-		cfg:  cfg,
+func delFirst(first []byte) []byte {
+	index := bytes.IndexByte(first, '\n')
+	first = first[index+1:]
+	return first
+}
+
+func delHeader(first []byte, replaceWord []string) []byte {
+	text := string(first)
+	for _, s := range replaceWord {
+		if s == "" {
+			continue
+		}
+		r := regexp.MustCompile(s + `.*\n`)
+		text = r.ReplaceAllString(text, "")
 	}
-	t.shakeHand(cfg.HttpsOpts.Server)
-	return t
+	return []byte(text)
+}
+
+func isHttpHeader(header []byte) bool {
+	if bytes.HasPrefix(header, []byte("CONNECT")) == true ||
+		bytes.HasPrefix(header, []byte("GET")) == true ||
+		bytes.HasPrefix(header, []byte("POST")) == true ||
+		bytes.HasPrefix(header, []byte("HEAD")) == true ||
+		bytes.HasPrefix(header, []byte("PUT")) == true ||
+		bytes.HasPrefix(header, []byte("COPY")) == true ||
+		bytes.HasPrefix(header, []byte("DELETE")) == true ||
+		bytes.HasPrefix(header, []byte("MOVE")) == true ||
+		bytes.HasPrefix(header, []byte("OPTIONS")) == true ||
+		bytes.HasPrefix(header, []byte("LINK")) == true ||
+		bytes.HasPrefix(header, []byte("UNLINK")) == true ||
+		bytes.HasPrefix(header, []byte("TRACE")) == true ||
+		bytes.HasPrefix(header, []byte("PATCH")) == true ||
+		bytes.HasPrefix(header, []byte("WRAPPED")) == true {
+		return true
+	}
+	return false
 }
 
 func NewTiny(option TinyOption) *Tiny {
 	return &Tiny{
 		Base: &Base{
 			name:  option.Name,
-			tp:    C.Tiny,
+			addr:  net.JoinHostPort(option.Server, strconv.Itoa(option.Port)),
+			tp:    C.Http,
 			iface: option.Interface,
+			rmark: option.RoutingMark,
 		},
 		httpOpts:  option.HttpOpts,
 		httpsOpts: option.HttpsOpts,
