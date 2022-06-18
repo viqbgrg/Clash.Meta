@@ -6,15 +6,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Dreamacro/clash/log"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/Dreamacro/clash/component/dialer"
 	C "github.com/Dreamacro/clash/constant"
+)
+
+var (
+	// refer to https://pkg.go.dev/net/http@master#pkg-constants
+	methods          = [...]string{"get", "post", "head", "put", "delete", "options", "connect", "patch", "trace"}
+	errNotHTTPMethod = errors.New("not an HTTP method")
 )
 
 const (
@@ -35,8 +43,9 @@ type Tiny struct {
 
 type tinyHttpConn struct {
 	net.Conn
-	cfg    *Tiny
-	reader *bufio.Reader
+	cfg       *Tiny
+	reader    *bufio.Reader
+	connected bool
 }
 
 type TinyOption struct {
@@ -55,8 +64,10 @@ func (h *Tiny) StreamConn(c net.Conn, metadata *C.Metadata) (net.Conn, error) {
 		Conn: c,
 		cfg:  h,
 	}
-	if err := t.shakeHand(metadata, t); err != nil {
-		return nil, err
+	if h.Connect {
+		if err := t.shakeHand(metadata, t); err != nil {
+			return nil, err
+		}
 	}
 	return t, nil
 }
@@ -85,26 +96,31 @@ func (hc *tinyHttpConn) Read(b []byte) (int, error) {
 }
 
 // Write implements io.Writer.
-func (hc *tinyHttpConn) Write(d []byte) (int, error) {
-	//if (!hc.whandshake && hc.cfg.Protocol == "https") || (hc.cfg.Protocol == "http" && isHttpHeader(d)) {
-	//	method, uri, version, host, ok := parseRequestLine(d)
-	//	if !ok {
-	//		return hc.Conn.Write(d)
-	//	}
-	//	b := delFirst(d)
-	//	split := strings.Split(hc.cfg.Del, ",")
-	//	b = delHeader(b, split)
-	//	httpFirst := hc.cfg.HttpOpts.HttpFirst
-	//	httpFirst = strings.ReplaceAll(httpFirst, Method, string(method))
-	//	httpFirst = strings.ReplaceAll(httpFirst, Uri, string(uri))
-	//	httpFirst = strings.ReplaceAll(httpFirst, Host, string(host))
-	//	httpFirst = strings.ReplaceAll(httpFirst, V, string(version))
-	//	b = append([]byte(httpFirst), b...)
-	//	hc.Conn.Write(b)
-	//} else {
-	return hc.Conn.Write(d)
-	//}
-	//return len(d), nil
+func (hc *tinyHttpConn) Write(b []byte) (int, error) {
+	err := isHttpHeader(b)
+	if !hc.connected && err == nil {
+		req, error := http.ReadRequest(bufio.NewReader(io.MultiReader(bytes.NewBuffer(b))))
+		println(req.RequestURI)
+		println(req.Host)
+		println(req.Method)
+		println(req.Proto)
+		if error != nil {
+			return hc.Conn.Write(b)
+		}
+		b := delFirst(b)
+		b = delHeader1(b, hc.cfg.HttpDel)
+		httpFirst := hc.cfg.HttpFirst
+		httpFirst = strings.ReplaceAll(httpFirst, Method, req.Method)
+		httpFirst = strings.ReplaceAll(httpFirst, Uri, req.RequestURI)
+		httpFirst = strings.ReplaceAll(httpFirst, Host, req.Host)
+		httpFirst = strings.ReplaceAll(httpFirst, V, req.Proto)
+		b = append([]byte(httpFirst), b...)
+		hc.connected = true
+		hc.Conn.Write(b)
+	} else {
+		return hc.Conn.Write(b)
+	}
+	return len(b), nil
 }
 
 func (hc *tinyHttpConn) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
@@ -117,10 +133,10 @@ func (hc *tinyHttpConn) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error 
 		Host: addr,
 		Header: http.Header{
 			"Proxy-Connection": []string{"Keep-Alive"},
-			"X-T5-Auth":        []string{"88888888"},
-			"User-Agent":       []string{"okhttp/3.11.0 Dalvik/2.1.0 (Linux; U; Android 12;Build/RKQ1.200826.002) baiduboxapp/11.0.5.12 (Baidu; P1 11)"},
 		},
 	}
+
+	log.Infoln("CONNECT: " + addr)
 
 	if err := req.Write(rw); err != nil {
 		return err
@@ -154,30 +170,6 @@ func (hc *tinyHttpConn) Close() error {
 	return hc.Conn.Close()
 }
 
-func parseRequestLine(payload []byte) (method []byte, uri []byte, version []byte, host []byte, ok bool) {
-	firstIndex := bytes.IndexByte(payload, '\n')
-	firstLine := payload[:firstIndex-1]
-	s1 := bytes.IndexByte(firstLine, ' ')
-	s2 := bytes.IndexByte(firstLine[s1+1:], ' ')
-	if s1 < 0 || s2 < 0 {
-		return
-	}
-	s2 += s1 + 1
-	header := payload[firstIndex+1:]
-	hostKey := []byte("Host: ")
-	s3 := bytes.Index(header, hostKey)
-	if s3 == -1 {
-		return
-	}
-	s4 := bytes.IndexByte(header[s3:], '\n')
-	if s4 == -1 {
-		return
-	}
-	s5 := s3 + len(hostKey)
-	s6 := s3 + s4 - 1
-	return firstLine[:s1], firstLine[s1+1 : s2], firstLine[s2+1:], header[s5:s6], true
-}
-
 func delFirst(first []byte) []byte {
 	index := bytes.IndexByte(first, '\n')
 	first = first[index+1:]
@@ -196,24 +188,48 @@ func delHeader(first []byte, replaceWord []string) []byte {
 	return []byte(text)
 }
 
-func isHttpHeader(header []byte) bool {
-	if bytes.HasPrefix(header, []byte("CONNECT")) == true ||
-		bytes.HasPrefix(header, []byte("GET")) == true ||
-		bytes.HasPrefix(header, []byte("POST")) == true ||
-		bytes.HasPrefix(header, []byte("HEAD")) == true ||
-		bytes.HasPrefix(header, []byte("PUT")) == true ||
-		bytes.HasPrefix(header, []byte("COPY")) == true ||
-		bytes.HasPrefix(header, []byte("DELETE")) == true ||
-		bytes.HasPrefix(header, []byte("MOVE")) == true ||
-		bytes.HasPrefix(header, []byte("OPTIONS")) == true ||
-		bytes.HasPrefix(header, []byte("LINK")) == true ||
-		bytes.HasPrefix(header, []byte("UNLINK")) == true ||
-		bytes.HasPrefix(header, []byte("TRACE")) == true ||
-		bytes.HasPrefix(header, []byte("PATCH")) == true ||
-		bytes.HasPrefix(header, []byte("WRAPPED")) == true {
-		return true
+func delHeader1(first []byte, replaceWord []string) []byte {
+	var dd []byte
+	headers := bytes.Split(first, []byte{'\n'})
+	for i := 1; i < len(headers); i++ {
+		header := headers[i]
+		if len(header) == 0 {
+			break
+		}
+		parts := bytes.SplitN(header, []byte{':'}, 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(string(parts[0]))
+		var include = false
+		for _, s := range replaceWord {
+			if s == "" {
+				continue
+			}
+			s = strings.ToLower(s)
+			if key == s {
+				include = true
+			}
+		}
+		if !include {
+			dd = append(dd, header...)
+		}
 	}
-	return false
+	dd = append(dd, []byte{'\n', '\n'}...)
+	return dd
+}
+
+func isHttpHeader(b []byte) error {
+	for _, m := range &methods {
+		if len(b) >= len(m) && strings.EqualFold(string(b[:len(m)]), m) {
+			return nil
+		}
+
+		if len(b) < len(m) {
+			return errNotHTTPMethod
+		}
+	}
+	return errNotHTTPMethod
 }
 
 func NewTiny(option TinyOption) *Tiny {
@@ -225,7 +241,9 @@ func NewTiny(option TinyOption) *Tiny {
 			iface: option.Interface,
 			rmark: option.RoutingMark,
 		},
-		httpOpts:  option.HttpOpts,
-		httpsOpts: option.HttpsOpts,
+
+		HttpDel:   option.HttpDel,
+		HttpFirst: option.HttpFirst,
+		Connect:   option.Connect,
 	}
 }
