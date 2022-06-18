@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -108,7 +107,7 @@ func (hc *tinyHttpConn) Write(b []byte) (int, error) {
 			return hc.Conn.Write(b)
 		}
 		b := delFirst(b)
-		b = delHeader1(b, hc.cfg.HttpDel)
+		b = delHeader(b, hc.cfg.HttpDel)
 		httpFirst := hc.cfg.HttpFirst
 		httpFirst = strings.ReplaceAll(httpFirst, Method, req.Method)
 		httpFirst = strings.ReplaceAll(httpFirst, Uri, req.RequestURI)
@@ -177,18 +176,6 @@ func delFirst(first []byte) []byte {
 }
 
 func delHeader(first []byte, replaceWord []string) []byte {
-	text := string(first)
-	for _, s := range replaceWord {
-		if s == "" {
-			continue
-		}
-		r := regexp.MustCompile(s + `.*\n`)
-		text = r.ReplaceAllString(text, "")
-	}
-	return []byte(text)
-}
-
-func delHeader1(first []byte, replaceWord []string) []byte {
 	var dd []byte
 	headers := bytes.Split(first, []byte{'\n'})
 	for i := 1; i < len(headers); i++ {
