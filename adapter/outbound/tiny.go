@@ -119,6 +119,9 @@ func (hc *tinyHttpConn) Write(b []byte) (int, error) {
 
 func (hc *tinyHttpConn) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
 	addr := metadata.RemoteAddress()
+	if metadata.DstIP.IsValid() && metadata.DstPort != "" {
+		addr = net.JoinHostPort(metadata.DstIP.String(), metadata.DstPort)
+	}
 	req := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
