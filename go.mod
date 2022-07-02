@@ -13,8 +13,8 @@ require (
 	github.com/lucas-clemente/quic-go v0.27.2
 	github.com/miekg/dns v1.1.49
 	github.com/oschwald/geoip2-golang v1.7.0
-	github.com/sagernet/sing v0.0.0-20220619130320-8793fe5e067d
-	github.com/sagernet/sing-shadowsocks v0.0.0-20220619134218-830a2f478eb1
+	github.com/sagernet/sing v0.0.0-20220627234642-a817f7084d9c
+	github.com/sagernet/sing-shadowsocks v0.0.0-20220627234717-689e0165ef2c
 	github.com/sagernet/sing-vmess v0.0.0-20220616051646-3d3fc5d01eec
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.7.2
@@ -39,7 +39,7 @@ require (
 
 replace github.com/vishvananda/netlink => github.com/MetaCubeX/netlink v1.2.0-beta.0.20220529072258-d6853f887820
 
-replace github.com/tobyxdd/hysteria => github.com/MetaCubeX/hysteria v1.0.5-0.20220607074613-210c46c75b15
+replace github.com/tobyxdd/hysteria => github.com/MetaCubeX/hysteria v1.0.5-0.20220626134949-6fa84cd3e256
 
 replace github.com/lucas-clemente/quic-go => github.com/tobyxdd/quic-go v0.27.1-0.20220512040129-ed2a645d9218
 
