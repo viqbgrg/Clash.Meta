@@ -77,11 +77,11 @@ func (h *Http) DialContext(ctx context.Context, metadata *C.Metadata, opts ...di
 
 func (h *Http) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
 	addr := metadata.RemoteAddress()
-	if h.option.Obscure != "" {
-		addr = addr + h.option.Obscure
-	}
 	if metadata.DstIP.IsValid() && metadata.DstPort != "" {
 		addr = net.JoinHostPort(metadata.DstIP.String(), metadata.DstPort)
+	}
+	if h.option.Obscure != "" {
+		addr = addr + h.option.Obscure
 	}
 	req := &http.Request{
 		Method: http.MethodConnect,
