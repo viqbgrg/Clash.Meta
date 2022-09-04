@@ -81,6 +81,13 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 			break
 		}
 		proxy, err = outbound.NewTrojan(*trojanOption)
+	case "tiny":
+		tinyOption := &outbound.TinyOption{}
+		err = decoder.Decode(mapping, tinyOption)
+		if err != nil {
+			break
+		}
+		proxy = outbound.NewTiny(*tinyOption)
 	case "hysteria":
 		hyOption := &outbound.HysteriaOption{}
 		err = decoder.Decode(mapping, hyOption)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	tlsC "github.com/Dreamacro/clash/component/tls"
+	"github.com/Dreamacro/clash/log"
 	"io"
 	"net"
 	"net/http"
@@ -38,6 +39,7 @@ type HttpOption struct {
 	SkipCertVerify bool              `proxy:"skip-cert-verify,omitempty"`
 	Fingerprint    string            `proxy:"fingerprint,omitempty"`
 	Headers        map[string]string `proxy:"headers,omitempty"`
+	Obscure        string            `proxy:"obscure,omitempty"`
 }
 
 // StreamConn implements C.ProxyAdapter
@@ -77,6 +79,12 @@ func (h *Http) DialContext(ctx context.Context, metadata *C.Metadata, opts ...di
 
 func (h *Http) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
 	addr := metadata.RemoteAddress()
+	if metadata.DstIP.IsValid() && metadata.DstPort != "" {
+		addr = net.JoinHostPort(metadata.DstIP.String(), metadata.DstPort)
+	}
+	if h.option.Obscure != "" {
+		addr = addr + h.option.Obscure
+	}
 	req := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
@@ -87,7 +95,7 @@ func (h *Http) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
 			"Proxy-Connection": []string{"Keep-Alive"},
 		},
 	}
-
+	log.Infoln("CONNECT: %s", addr)
 	//增加headers
 	if len(h.option.Headers) != 0 {
 		for key, value := range h.option.Headers {
