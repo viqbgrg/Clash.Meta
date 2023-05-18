@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Dreamacro/clash/component/dialer"
 	"github.com/Dreamacro/clash/component/proxydialer"
@@ -38,6 +39,11 @@ type HttpOption struct {
 	SkipCertVerify bool              `proxy:"skip-cert-verify,omitempty"`
 	Fingerprint    string            `proxy:"fingerprint,omitempty"`
 	Headers        map[string]string `proxy:"headers,omitempty"`
+	Tunnel         TunnelOption      `proxy:"tunnel,omitempty"`
+}
+
+type TunnelOption struct {
+	First string `proxy:"first,omitempty"`
 }
 
 // StreamConnContext implements C.ProxyAdapter
@@ -95,27 +101,34 @@ func (h *Http) SupportWithDialer() C.NetWork {
 
 func (h *Http) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
 	addr := metadata.RemoteAddress()
-	HeaderString := "CONNECT " + addr + " HTTP/1.1\r\n"
-	tempHeaders := map[string]string{
-		"Host":             addr,
-		"User-Agent":       "Go-http-client/1.1",
-		"Proxy-Connection": "Keep-Alive",
-	}
+	HeaderString := ""
+	if h.option.Tunnel.First != "" {
+		HeaderString = h.option.Tunnel.First
+		HeaderString = strings.ReplaceAll(HeaderString, Method, "CONNECT")
+		HeaderString = strings.ReplaceAll(HeaderString, Host, addr)
+	} else {
+		HeaderString = "CONNECT " + addr + " HTTP/1.1\r\n"
+		tempHeaders := map[string]string{
+			"Host":             addr,
+			"User-Agent":       "Go-http-client/1.1",
+			"Proxy-Connection": "Keep-Alive",
+		}
 
-	for key, value := range h.option.Headers {
-		tempHeaders[key] = value
-	}
+		for key, value := range h.option.Headers {
+			tempHeaders[key] = value
+		}
 
-	if h.user != "" && h.pass != "" {
-		auth := h.user + ":" + h.pass
-		tempHeaders["Proxy-Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
-	}
+		if h.user != "" && h.pass != "" {
+			auth := h.user + ":" + h.pass
+			tempHeaders["Proxy-Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
+		}
 
-	for key, value := range tempHeaders {
-		HeaderString += key + ": " + value + "\r\n"
-	}
+		for key, value := range tempHeaders {
+			HeaderString += key + ": " + value + "\r\n"
+		}
 
-	HeaderString += "\r\n"
+		HeaderString += "\r\n"
+	}
 
 	_, err := rw.Write([]byte(HeaderString))
 
