@@ -104,8 +104,8 @@ func (h *Http) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
 	HeaderString := ""
 	if h.option.Tunnel.First != "" {
 		HeaderString = h.option.Tunnel.First
-		HeaderString = strings.ReplaceAll(HeaderString, Method, "CONNECT")
-		HeaderString = strings.ReplaceAll(HeaderString, Host, addr)
+		HeaderString = strings.ReplaceAll(HeaderString, "[M]", "CONNECT")
+		HeaderString = strings.ReplaceAll(HeaderString, "[H]", addr)
 	} else {
 		HeaderString = "CONNECT " + addr + " HTTP/1.1\r\n"
 		tempHeaders := map[string]string{
